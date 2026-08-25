@@ -72,7 +72,8 @@ class PolicyEngine:
             }
 
         # Rule 5: If recovery window has expired -> STOP
-        time_elapsed = datetime.utcnow() - recovery_case.created_at
+        created_at_time = recovery_case.created_at or datetime.utcnow()
+        time_elapsed = datetime.utcnow() - created_at_time
         if time_elapsed > timedelta(hours=self.config.recovery_window_hours):
             return {
                 "allowed": False,
