@@ -1,0 +1,111 @@
+from sqlalchemy import Column, String, Integer, Float, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy.orm import relationship
+from datetime import datetime
+from backend.app.core.database import Base
+
+class Customer(Base):
+    __tablename__ = "customers"
+    
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=False)
+    phone = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    transactions = relationship("Transaction", back_populates="customer")
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+    
+    id = Column(String, primary_key=True, index=True)
+    customer_id = Column(String, ForeignKey("customers.id"), index=True, nullable=False)
+    order_id = Column(String, nullable=True)
+    amount = Column(Float, nullable=False)  # stored in rupees / major currency unit
+    currency = Column(String, default="INR")
+    status = Column(String, index=True, default="created")  # created, failed, captured
+    payment_method = Column(String, nullable=True)  # card, upi, netbanking, wallet
+    failure_code = Column(String, nullable=True)
+    failure_type = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    customer = relationship("Customer", back_populates="transactions")
+    attempts = relationship("PaymentAttempt", back_populates="transaction")
+    recovery_cases = relationship("RecoveryCase", back_populates="transaction")
+
+class PaymentAttempt(Base):
+    __tablename__ = "payment_attempts"
+    
+    id = Column(String, primary_key=True, index=True)
+    transaction_id = Column(String, ForeignKey("transactions.id"), index=True, nullable=False)
+    attempt_number = Column(Integer, nullable=False)
+    payment_method = Column(String, nullable=True)
+    failure_code = Column(String, nullable=True)
+    failure_reason = Column(String, nullable=True)
+    status = Column(String, nullable=False)  # failed, captured
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    transaction = relationship("Transaction", back_populates="attempts")
+
+class RecoveryCase(Base):
+    __tablename__ = "recovery_cases"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    transaction_id = Column(String, ForeignKey("transactions.id"), index=True, nullable=False)
+    status = Column(String, default="FAILED", index=True)  # FAILED, ANALYZING, RECOVERY_ELIGIBLE, ACTION_PENDING, ACTION_EXECUTED, AWAITING_RESULT, RECOVERED, MANUAL_REVIEW, STOPPED
+    recovery_probability = Column(Float, default=0.0)
+    expected_recovery = Column(Float, default=0.0)
+    recommended_action = Column(String, nullable=True)
+    retry_count = Column(Integer, default=0)
+    max_retries = Column(Integer, default=3)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    transaction = relationship("Transaction", back_populates="recovery_cases")
+    actions = relationship("RecoveryAction", back_populates="recovery_case")
+
+class RecoveryAction(Base):
+    __tablename__ = "recovery_actions"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    recovery_case_id = Column(Integer, ForeignKey("recovery_cases.id"), index=True, nullable=False)
+    action_type = Column(String, nullable=False)  # RETRY, PAYMENT_LINK, REMINDER, MANUAL_REVIEW, STOP
+    status = Column(String, default="PENDING")  # PENDING, EXECUTED, FAILED, CANCELLED
+    details = Column(Text, nullable=True)  # JSON or descriptive text
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    recovery_case = relationship("RecoveryCase", back_populates="actions")
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    transaction_id = Column(String, index=True, nullable=True)
+    recovery_case_id = Column(Integer, index=True, nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    actor = Column(String, nullable=False)  # SYSTEM, AI, POLICY, ADMIN
+    action = Column(String, nullable=False)
+    previous_state = Column(String, nullable=True)
+    new_state = Column(String, nullable=True)
+    reason = Column(Text, nullable=True)
+    metadata_json = Column(Text, nullable=True)  # JSON string
+
+class WebhookEvent(Base):
+    __tablename__ = "webhook_events"
+    
+    id = Column(String, primary_key=True, index=True)  # razorpay event_id
+    event_name = Column(String, nullable=False)
+    payload = Column(Text, nullable=False)
+    processed = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class PolicyConfig(Base):
+    __tablename__ = "policy_configs"
+    
+    id = Column(Integer, primary_key=True, default=1)  # single row config
+    max_retries = Column(Integer, default=3)
+    min_confidence = Column(Float, default=0.70)
+    recovery_window_hours = Column(Integer, default=72)
+    max_automated_amount = Column(Float, default=50000.0)  # e.g., 50k INR
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
