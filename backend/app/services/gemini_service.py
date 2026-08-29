@@ -126,7 +126,7 @@ class GeminiService:
                 env_pref = env_pref[7:]
 
             sorted_candidates = []
-            if env_pref and env_pref in candidates:
+            if env_pref:
                 sorted_candidates.append(env_pref)
 
             # Prioritize standard flash models
@@ -141,13 +141,20 @@ class GeminiService:
             lite = sorted([c for c in candidates if "lite" in c], reverse=True)
             sorted_candidates.extend(lite)
 
+            # Fallbacks in case list is empty or API key restricts list API
+            standard_fallbacks = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+            sorted_candidates.extend(standard_fallbacks)
+
             # Deduplicate
             seen = set()
             sorted_candidates = [c for c in sorted_candidates if not (c in seen or seen.add(c))]
 
-            # Verify top 3 candidates at boot
+            # Verify top candidates at boot
             verified_list = []
-            for candidate in sorted_candidates[:3]:
+            for candidate in sorted_candidates:
+                # Limit validation checks to save quota/startup time, but check until we verify at least one
+                if len(verified_list) >= 2:
+                    break
                 print(f"Discovering and testing model: {candidate}")
                 test_status = cls.verify_model_compatibility(candidate)
                 if test_status["verified"]:
@@ -160,6 +167,11 @@ class GeminiService:
                         cls._active_model = candidate
                         cls._last_verified_at = datetime.utcnow().isoformat()
             cls._verified_models = verified_list
+            
+            # If no model could be successfully verified, set active_model to first preference anyway as fallback
+            if not cls._active_model and sorted_candidates:
+                cls._active_model = sorted_candidates[0]
+                print(f"No model verified successfully. Falling back to active model: {cls._active_model}")
         except Exception as e:
             print(f"Error during model initialization: {e}")
 

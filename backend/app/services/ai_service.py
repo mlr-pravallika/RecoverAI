@@ -34,7 +34,7 @@ class AIAgentBase:
                 config = {"response_mime_type": "application/json"}
                 
             from backend.app.services.gemini_service import GeminiService
-            active_model = GeminiService.get_active_model() or "gemini-3.5-flash"
+            active_model = GeminiService.get_active_model() or "gemini-2.5-flash"
             response = self.client.models.generate_content(
                 model=active_model,
                 contents=prompt,
