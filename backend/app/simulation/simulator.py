@@ -226,7 +226,7 @@ class SimulationEngine:
         }
 
     @staticmethod
-    def trigger_demo_scenario(db: Session, scenario: str) -> dict:
+    def trigger_demo_scenario(db: Session, scenario: str, merchant_id: str) -> dict:
         """
         Creates a custom mock failed transaction and initiates recovery
         based on the requested scenario (Cases A through I).
@@ -266,17 +266,23 @@ class SimulationEngine:
         
         scen_info = scenarios.get(scenario, scenarios["CASE_A"])
         
-        # Pick a random customer
-        cust = db.query(models.Customer).first()
+        # Pick a customer for this merchant
+        cust = db.query(models.Customer).filter(models.Customer.merchant_id == merchant_id).first()
         if not cust:
             # Create a customer
-            cust = models.Customer(id="cust_demo", name="Demo Customer", email="demo@recoverai.com")
+            cust = models.Customer(
+                id=f"cust_demo_{random.randint(1000, 9999)}",
+                merchant_id=merchant_id,
+                name="Demo Customer",
+                email="demo@recoverai.com"
+            )
             db.add(cust)
             db.commit()
             
         tx_id = f"pay_demo_{scenario.lower()}_{random.randint(1000, 9999)}"
         tx = models.Transaction(
             id=tx_id,
+            merchant_id=merchant_id,
             customer_id=cust.id,
             amount=scen_info["amount"],
             currency="INR",
@@ -284,6 +290,7 @@ class SimulationEngine:
             payment_method=scen_info["method"],
             failure_code=scen_info["code"],
             failure_type="fraud" if scen_info["code"] == "BAD_REQUEST_PAYMENT_RISK_THRESHOLD_EXCEEDED" else "permanent" if scen_info["code"] == "BAD_REQUEST_PAYMENT_CARD_EXPIRED" else "temporary",
+            is_demo=True,
             created_at=datetime.utcnow()
         )
         db.add(tx)
@@ -311,3 +318,127 @@ class SimulationEngine:
             "description": scen_info["desc"],
             "analysis": analysis_res
         }
+
+    @staticmethod
+    def seed_merchant_demo_data(db: Session, merchant_id: str):
+        """
+        Clones the global unassociated seeded dataset for a newly registered merchant
+        to populate their Demo Mode data instantly.
+        """
+        # Find global customers (where merchant_id is None or empty)
+        global_customers = db.query(models.Customer).filter(
+            (models.Customer.merchant_id == None) | (models.Customer.merchant_id == "")
+        ).all()
+        
+        customer_map = {}
+        for cust in global_customers:
+            new_cust_id = f"{cust.id}_{merchant_id[:6]}"
+            # Prevent duplicate key if re-run
+            existing = db.query(models.Customer).filter(models.Customer.id == new_cust_id).first()
+            if not existing:
+                new_cust = models.Customer(
+                    id=new_cust_id,
+                    merchant_id=merchant_id,
+                    name=cust.name,
+                    email=cust.email,
+                    phone=cust.phone,
+                    created_at=cust.created_at
+                )
+                db.add(new_cust)
+                customer_map[cust.id] = new_cust_id
+            else:
+                customer_map[cust.id] = existing.id
+                
+        db.commit() # Flush so customer IDs exist
+        
+        # Find global transactions
+        global_txs = db.query(models.Transaction).filter(
+            (models.Transaction.merchant_id == None) | (models.Transaction.merchant_id == "")
+        ).all()
+        
+        for tx in global_txs:
+            new_tx_id = f"{tx.id}_{merchant_id[:6]}"
+            existing_tx = db.query(models.Transaction).filter(models.Transaction.id == new_tx_id).first()
+            if existing_tx:
+                continue
+                
+            new_tx = models.Transaction(
+                id=new_tx_id,
+                merchant_id=merchant_id,
+                customer_id=customer_map.get(tx.customer_id, tx.customer_id),
+                order_id=tx.order_id,
+                amount=tx.amount,
+                currency=tx.currency,
+                status=tx.status,
+                payment_method=tx.payment_method,
+                failure_code=tx.failure_code,
+                failure_type=tx.failure_type,
+                is_demo=True,
+                created_at=tx.created_at,
+                updated_at=tx.updated_at
+            )
+            db.add(new_tx)
+            
+            # payment attempts
+            for attempt in tx.attempts:
+                new_att_id = f"{attempt.id}_{merchant_id[:6]}"
+                new_att = models.PaymentAttempt(
+                    id=new_att_id,
+                    transaction_id=new_tx_id,
+                    attempt_number=attempt.attempt_number,
+                    payment_method=attempt.payment_method,
+                    failure_code=attempt.failure_code,
+                    failure_reason=attempt.failure_reason,
+                    status=attempt.status,
+                    created_at=attempt.created_at
+                )
+                db.add(new_att)
+                
+            # recovery cases
+            for case in tx.recovery_cases:
+                new_case = models.RecoveryCase(
+                    merchant_id=merchant_id,
+                    transaction_id=new_tx_id,
+                    status=case.status,
+                    recovery_probability=case.recovery_probability,
+                    expected_recovery=case.expected_recovery,
+                    recommended_action=case.recommended_action,
+                    retry_count=case.retry_count,
+                    max_retries=case.max_retries,
+                    created_at=case.created_at,
+                    updated_at=case.updated_at
+                )
+                db.add(new_case)
+                db.flush() # get new_case.id
+                
+                # recovery actions
+                for action in case.actions:
+                    new_act = models.RecoveryAction(
+                        recovery_case_id=new_case.id,
+                        action_type=action.action_type,
+                        status=action.status,
+                        details=action.details,
+                        created_at=action.created_at,
+                        updated_at=action.updated_at
+                    )
+                    db.add(new_act)
+                    
+                # audit logs
+                audit_logs = db.query(models.AuditLog).filter(models.AuditLog.recovery_case_id == case.id).all()
+                for audit in audit_logs:
+                    new_audit = models.AuditLog(
+                        merchant_id=merchant_id,
+                        transaction_id=new_tx_id,
+                        recovery_case_id=new_case.id,
+                        timestamp=audit.timestamp,
+                        actor=audit.actor,
+                        action=audit.action,
+                        previous_state=audit.previous_state,
+                        new_state=audit.new_state,
+                        reason=audit.reason,
+                        metadata_json=audit.metadata_json
+                    )
+                    db.add(new_audit)
+                    
+        db.commit()
+

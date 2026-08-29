@@ -5,6 +5,7 @@ __pycache__/
 
 # Database
 *.db
+*.sqlite
 *.sqlite3
 
 # Environment
@@ -13,6 +14,7 @@ __pycache__/
 .env.development.local
 .env.test.local
 .env.production.local
+!.env.example
 
 # Virtual Env
 venv/
@@ -34,3 +36,6 @@ dist-ssr/
 *.njsproj
 *.sln
 *.swp
+
+
+.DS_Store

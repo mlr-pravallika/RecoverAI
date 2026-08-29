@@ -10,7 +10,8 @@ import {
   ShieldCheck, 
   Check, 
   Ban,
-  Mail
+  Mail,
+  AlertTriangle
 } from 'lucide-react';
 
 export const Queue: React.FC = () => {
@@ -22,6 +23,7 @@ export const Queue: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState('');
   const [failureFilter, setFailureFilter] = useState('');
   const [actionFilter, setActionFilter] = useState('');
+  const [merchantMode, setMerchantMode] = useState<string>('demo');
 
   // Fetch queue
   const fetchQueue = async () => {
@@ -44,6 +46,12 @@ export const Queue: React.FC = () => {
   useEffect(() => {
     fetchQueue();
   }, [statusFilter, failureFilter, actionFilter]);
+
+  useEffect(() => {
+    api.getMerchantProfile()
+      .then((m) => setMerchantMode(m.mode))
+      .catch(console.error);
+  }, []);
 
   // Handle row click
   const handleSelectTransaction = async (txId: string) => {
@@ -70,9 +78,10 @@ export const Queue: React.FC = () => {
         const reason = prompt("Enter cancel reason:", "Merchant manual cancel override.");
         if (reason === null) return;
         await api.stopRecoveryCase(caseId, reason);
+        alert("Case aborted successfully.");
       } else {
-        // Mock manual approval
-        alert("Action approved. Initiating manual outreach/retry.");
+        await api.approveRecoveryCase(caseId);
+        alert("Action manually approved and executed successfully!");
       }
       // Re-fetch transaction detail and queue
       const tx = await api.getTransaction(selectedTx.id);
@@ -176,7 +185,29 @@ export const Queue: React.FC = () => {
         {loading && transactions.length === 0 ? (
           <div className="p-12 text-center text-slate-500 font-medium animate-pulse">Loading recovery queue...</div>
         ) : transactions.length === 0 ? (
-          <div className="p-12 text-center text-slate-500">No transactions match the filter parameters.</div>
+          merchantMode === 'real' ? (
+            <div className="p-12 text-center text-slate-500 max-w-md mx-auto space-y-4">
+              <AlertTriangle className="w-12 h-12 text-amber-500 mx-auto" />
+              <h3 className="text-base font-bold text-white">No Razorpay Test Mode transactions found</h3>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                We couldn't detect any Sandbox payment dropoffs in your account. To generate a failure transaction:
+              </p>
+              <div className="bg-slate-950 p-4 rounded-xl border border-slate-850 text-left text-xs font-mono text-slate-400 space-y-1">
+                <p>1. Go to Policy Rules settings tab.</p>
+                <p>2. Verify your Razorpay Connection status.</p>
+                <p>3. Click "Sync Test Data" to fetch sandbox events.</p>
+                <p>4. Wait for webhook signals to auto-ingest.</p>
+              </div>
+              <button 
+                onClick={fetchQueue}
+                className="px-4 py-2 bg-cyan-500 hover:bg-cyan-600 text-white font-bold text-xs rounded-lg transition-colors mt-2"
+              >
+                Refresh Queue
+              </button>
+            </div>
+          ) : (
+            <div className="p-12 text-center text-slate-500">No transactions match the filter parameters.</div>
+          )
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
@@ -333,12 +364,12 @@ export const Queue: React.FC = () => {
                   </div>
                   <div>
                     <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">4. AI Agent Proposal & Rationale</span>
-                    <div className="p-3 bg-slate-950/70 border border-slate-850 rounded-lg mt-1 text-xs text-slate-300 italic font-medium">
-                      "{selectedTx.recovery_cases[0]?.recommended_action === 'STOP' 
+                    <div className="p-3 bg-slate-950/70 border border-slate-850 rounded-lg mt-1 text-xs text-slate-300 italic font-medium leading-relaxed">
+                      "{selectedTx.recovery_cases[0]?.explanation || (selectedTx.recovery_cases[0]?.recommended_action === 'STOP' 
                         ? 'Potential fraud or permanent loss. Stopping recovery saves fees and avoids duplicate interactions.' 
                         : selectedTx.recovery_cases[0]?.recommended_action === 'MANUAL_REVIEW' 
                         ? 'High value checkout failure. Requires custom merchant outreach rather than standard automated retries.'
-                        : 'Temporary declined code with strong customer checkout history. Auto retry approved.'}"
+                        : 'Temporary declined code with strong customer checkout history. Auto retry approved.')}"
                     </div>
                   </div>
                 </div>

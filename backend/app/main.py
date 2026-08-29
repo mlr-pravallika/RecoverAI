@@ -1,11 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend.app.core.database import engine, Base
+from backend.app.core.database import engine, Base, run_migrations
 from backend.app.schemas.schemas import HealthResponse
 from backend.app.api.endpoints import router as api_router
 
-# Automatically create all tables on startup (sqlite/pg)
-Base.metadata.create_all(bind=engine)
+# Automatically run schema migrations on startup
+run_migrations()
 
 app = FastAPI(
     title="RecoverAI",

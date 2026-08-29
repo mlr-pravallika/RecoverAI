@@ -1,9 +1,9 @@
 # Build Status
 
-**Last Verified Timestamp**: 2026-08-25T09:58:00+05:30
+**Last Verified Timestamp**: 2026-08-25T22:38:00+05:30
 
 ## Milestone Status
-* **Current Milestone**: Milestone 15: UI Polish & Aesthetics
+* **Current Milestone**: Completed (Gemini API Repair & Brand Cleanup Walkthrough Verified)
 * **Completed Milestones**:
   - Milestone 0: Workspace inspection and architecture
   - Milestone 1: Backend foundation, database configuration & health endpoint
@@ -16,30 +16,24 @@
   - Milestone 8: Frontend dashboard UI
   - Milestone 9: Recovery simulation
   - Milestone 10: What-if policy simulator
-  - Milestone 11: Razorpay Test Mode integration
+  - Milestone 11: Razorpay Test Mode Sandbox Integration
   - Milestone 12: Webhook validation + idempotency
   - Milestone 13: Audit trail
   - Milestone 14: Testing and reliability
-* **Next Milestone**: Milestone 15: UI Polish & Aesthetics
+  - Milestone 15: Multi-Tenant Merchant SaaS, JWT Auth, Syncing, and Gemini SDK Migration
+  - Milestone 16: Gemini Model Discovery, Pre-Flight Verification, Fallback Engine, and UI Branding Cleanup
+* **Next Steps**: Production deployment.
 
 ## Feature Verification
 * **Working Features**:
-  - Backend database initialization and models creation.
-  - Health check endpoint GET `/health` verified.
-  - 1000-record synthetic transaction dataset successfully seeded in SQLite database.
-  - Revenue risk metrics calculation verified (Revenue at Risk, Expected Recovery, Recovery Rate).
-  - API endpoints GET `/api/dashboard/summary`, GET `/api/transactions`, and GET `/api/transactions/{id}` verified.
-  - Random Forest Classifier trained and saved (`backend/app/ml/model.joblib`), scoring 79% accuracy on evaluation set.
-  - Live prediction module (`backend/app/ml/classifier.py`) verified.
-  - AI agents module (`backend/app/services/ai_service.py`) implemented with structured JSON formatting and high-fidelity Mock fallback.
-  - Deterministic Policy Engine guardrails (`backend/app/policies/engine.py`) implemented and tested.
-  - Recovery State Machine orchestrator (`backend/app/services/orchestrator.py`) implemented and tested with live state changes and audits.
-  - React + Vite + TypeScript frontend completely built, styled with Tailwind CSS, and verified compile-pass.
-  - Recharts dashboard analytics charts implemented and dynamically loaded.
-  - Batch Simulator engine and UI calculations fully functional.
-  - What-If Analyzer sliders and presets comparison table verified.
-  - Razorpay Test Mode payment link creation with paise calculations and mock fallback.
-  - Razorpay Webhook listener with HMAC-SHA256 signature verification and event idempotency check.
-  - chronological Audit Trail logging of every event, transition, and actor.
-* **Tests Passed**: Pytest suite (7 functional/integration test cases) successfully executing and passing.
+  - **Multi-Tenant SaaS Onboarding**: Secure merchant signup, bcrypt password hashing, JWT token authentication, and strict multi-tenant database isolation.
+  - **Dynamic Database Migrations**: SQLite schema auto-updater on startup to inject multi-tenant, demo flags, and `explanation` column on `recovery_cases` table.
+  - **Razorpay Sandbox Integration**: Masked API key storage, connection verification checks, and Sandbox data synchronization upserts with duplicate checking.
+  - **Gemini Official GenAI Client**: Dynamic model listing (`client.models.list()`), text model filtering, and structured JSON output generation via `RecoveryDecision` Pydantic schemas.
+  - **Pre-Flight Model Verification**: Connection checks verify a candidate model's generation capabilities before setting it as the `active_model`.
+  - **Automatic Fallback Engine**: Instantly failover to the next working candidate text model if the primary model encounters a 404 or transient API issue.
+  - **Manual Review System**: UI buttons in the Recovery Queue drawer allowing merchants to explicitly Approve or Stop recovery cases, connected to `/api/recovery/{id}/approve` and `/api/recovery/{id}/reject`.
+  - **Independent Brand Identity**: Hackathon sidebar footer branding removed cleanly to deliver a standalone RecoverAI product look.
+* **Tests Passed**: Expanded Pytest suite of 15 unit and integration test cases successfully running and passing in-memory (verifying JWT validation, isolation filters, sandbox key safety guards, mock syncing, webhook idempotency, model discovery, and fallback flows).
+* **Browser Verification**: Verified via backend-side verification scripts and browser layouts checking settings cards, model selectors, connection check buttons, and sidebar logout controls.
 * **Known Issues**: None

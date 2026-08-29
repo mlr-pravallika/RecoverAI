@@ -52,6 +52,7 @@ class RecoveryCaseResponse(BaseModel):
     recovery_probability: float
     expected_recovery: float
     recommended_action: Optional[str] = None
+    explanation: Optional[str] = None
     retry_count: int
     max_retries: int
     created_at: datetime
@@ -160,3 +161,32 @@ class AuditLogResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class MerchantSignup(BaseModel):
+    business_name: str
+    owner_name: str
+    email: str
+    password: str
+
+class MerchantLogin(BaseModel):
+    email: str
+    password: str
+
+class MerchantResponse(BaseModel):
+    id: str
+    business_name: str
+    owner_name: str
+    email: str
+    mode: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+    merchant: MerchantResponse
+

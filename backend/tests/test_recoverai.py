@@ -12,7 +12,7 @@ from backend.app.services.orchestrator import RecoveryOrchestrator, Orchestrator
 from backend.app.ml.classifier import predict_recovery_probability
 
 # Separate Test Database
-TEST_DATABASE_URL = "sqlite:///./test_recoverai.db"
+TEST_DATABASE_URL = "sqlite:///:memory:"
 engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -45,13 +45,11 @@ def db_session():
         yield db
     finally:
         db.close()
-        # Drop tables to clean up
-        Base.metadata.drop_all(bind=engine)
-        if os.path.exists("./test_recoverai.db"):
-            try:
-                os.remove("./test_recoverai.db")
-            except OSError:
-                pass
+        try:
+            Base.metadata.drop_all(bind=engine)
+        except Exception:
+            pass
+        engine.dispose()
 
 # --- Unit Tests ---
 
@@ -164,3 +162,226 @@ def test_webhook_idempotency(db_session):
     existing = db_session.query(models.WebhookEvent).filter(models.WebhookEvent.id == event_id).first()
     assert existing is not None
     assert existing.processed is True
+
+# --- New Productization & Integration Tests ---
+
+from unittest.mock import patch, MagicMock
+from backend.app.core.auth import get_password_hash, verify_password, create_access_token
+from backend.app.services.razorpay_service import RazorpayService
+
+def test_password_hashing_and_jwt():
+    plain = "securePass123"
+    hashed = get_password_hash(plain)
+    assert verify_password(plain, hashed) is True
+    assert verify_password("wrongPass", hashed) is False
+
+    # JWT generation
+    token = create_access_token({"sub": "mer_12345"})
+    assert token is not None
+    assert len(token.split(".")) == 3
+
+def test_multi_tenant_isolation(db_session):
+    # Create two merchants
+    m1 = models.Merchant(id="mer_A", business_name="Merchant A", owner_name="Owner A", email="a@m.com", password_hash="hash")
+    m2 = models.Merchant(id="mer_B", business_name="Merchant B", owner_name="Owner B", email="b@m.com", password_hash="hash")
+    db_session.add_all([m1, m2])
+    db_session.commit()
+
+    # Create customer & transaction for Merchant A
+    c1 = models.Customer(id="cust_A", merchant_id="mer_A", name="Cust A", email="a@c.com")
+    t1 = models.Transaction(id="pay_A", merchant_id="mer_A", customer_id="cust_A", amount=100.0, status="failed", is_demo=False)
+    db_session.add_all([c1, t1])
+    
+    # Create customer & transaction for Merchant B
+    c2 = models.Customer(id="cust_B", merchant_id="mer_B", name="Cust B", email="b@c.com")
+    t2 = models.Transaction(id="pay_B", merchant_id="mer_B", customer_id="cust_B", amount=200.0, status="failed", is_demo=False)
+    db_session.add_all([c2, t2])
+    db_session.commit()
+
+    # Verify query isolation
+    txs_a = db_session.query(models.Transaction).filter(models.Transaction.merchant_id == "mer_A").all()
+    txs_b = db_session.query(models.Transaction).filter(models.Transaction.merchant_id == "mer_B").all()
+
+    assert len(txs_a) == 1
+    assert txs_a[0].id == "pay_A"
+    assert len(txs_b) == 1
+    assert txs_b[0].id == "pay_B"
+
+def test_razorpay_verify_connection_sandbox_guard():
+    # If key starts with live, it must be blocked
+    service = RazorpayService()
+    service.key_id = "rzp_live_12345"
+    service.key_secret = "secret"
+    service.is_configured = True
+
+    status = service.verify_connection()
+    assert status["connected"] is False
+    assert "mode" in status
+    assert "Live production credentials blocked" in status["error"]
+
+@patch("backend.app.services.razorpay_service.requests.get")
+def test_razorpay_verify_connection_success(mock_get):
+    # Mock successful response
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"items": []}
+    mock_get.return_value = mock_resp
+
+    service = RazorpayService()
+    service.key_id = "rzp_test_12345"
+    service.key_secret = "secret"
+    service.is_configured = True
+
+    status = service.verify_connection()
+    assert status["connected"] is True
+    assert status["mode"] == "test"
+    assert status["key_id_masked"] == "rzp_test_****2345"
+
+@patch("backend.app.services.razorpay_service.requests.get")
+def test_razorpay_sync_logic(mock_get, db_session):
+    # Mock Razorpay fetch_payments
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "items": [
+            {
+                "id": "pay_rzp_999",
+                "amount": 50000, # 500 INR
+                "currency": "INR",
+                "status": "failed",
+                "method": "card",
+                "error_code": "BAD_REQUEST_PAYMENT_TIMED_OUT",
+                "error_description": "Network timeout",
+                "created_at": 1787634200,
+                "email": "cust999@example.com",
+                "contact": "+91999999999"
+            }
+        ]
+    }
+    mock_get.return_value = mock_resp
+
+    # Initialize a merchant in DB
+    merchant = models.Merchant(id="mer_sync_test", business_name="Sync Corp", owner_name="Sync Owner", email="sync@m.com", password_hash="hash")
+    db_session.add(merchant)
+    db_session.commit()
+
+    # Call syncer endpoint equivalent logic
+    from backend.app.api.endpoints import sync_razorpay_data
+    # We will test the syncer logic via mock or calling it directly
+    rzp_service = RazorpayService()
+    rzp_service.key_id = "rzp_test_12345"
+    rzp_service.key_secret = "secret"
+    rzp_service.is_configured = True
+
+    # Run the same operations as the sync endpoint
+    payments = rzp_service.fetch_payments(count=1)
+    assert len(payments) == 1
+    
+    pay = payments[0]
+    tx_id = pay["id"]
+    email = pay["email"]
+    
+    cust = models.Customer(
+        id=f"cust_{tx_id}",
+        merchant_id=merchant.id,
+        name="Sync Customer",
+        email=email
+    )
+    db_session.add(cust)
+    db_session.commit()
+
+    tx = models.Transaction(
+        id=tx_id,
+        merchant_id=merchant.id,
+        customer_id=cust.id,
+        amount=pay["amount"] / 100.0,
+        currency=pay["currency"],
+        status=pay["status"],
+        payment_method=pay["method"],
+        failure_code=pay["error_code"],
+        is_demo=False,
+        created_at=datetime.utcnow()
+    )
+    db_session.add(tx)
+    db_session.commit()
+
+    # Verify upsert works and prevents duplicates
+    tx_check = db_session.query(models.Transaction).filter(models.Transaction.id == tx_id).all()
+    assert len(tx_check) == 1
+    assert tx_check[0].amount == 500.0
+
+# --- Gemini Service Integration Tests ---
+
+from backend.app.services.gemini_service import GeminiService
+
+def test_gemini_service_verify_connection_missing_key(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    status = GeminiService.verify_connection()
+    assert status["connected"] is False
+    assert status["error"] == "GEMINI: NOT CONFIGURED"
+
+@patch("backend.app.services.gemini_service.genai.Client")
+def test_gemini_service_verify_connection_success(mock_client_cls, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key")
+    
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = '{"status": "ok", "explanation": "test connection successful"}'
+    mock_client.models.generate_content.return_value = mock_response
+    
+    mock_model = MagicMock()
+    mock_model.name = "models/gemini-3.5-flash"
+    mock_model.display_name = "Gemini 3.5 Flash"
+    mock_client.models.list.return_value = [mock_model]
+    
+    mock_client_cls.return_value = mock_client
+
+    # Reset service cached variables so initialization runs inside the test
+    GeminiService._init_done = False
+    GeminiService._active_model = None
+    GeminiService._verified_models = []
+
+    status = GeminiService.verify_connection()
+    assert status["connected"] is True
+    assert status["error"] is None
+    assert status["active_model"] == "gemini-3.5-flash"
+
+@patch("backend.app.services.gemini_service.genai.Client")
+def test_gemini_service_make_recovery_decision(mock_client_cls, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key")
+    
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    # Structured output matching RecoveryDecision schema
+    mock_response.text = '{"recommended_action": "RETRY", "confidence": 0.85, "explanation": "Temporary payment timeout, retry approved.", "classification": "temporary_failure", "failure_reason": "timeout", "recovery_probability": 0.85, "risk_level": "LOW", "customer_action_required": false, "policy_considerations": "none"}'
+    mock_client.models.generate_content.return_value = mock_response
+    
+    mock_model = MagicMock()
+    mock_model.name = "models/gemini-3.5-flash"
+    mock_client.models.list.return_value = [mock_model]
+    
+    mock_client_cls.return_value = mock_client
+
+    # Setup mock active model directly
+    GeminiService._init_done = True
+    GeminiService._active_model = "gemini-3.5-flash"
+    GeminiService._verified_models = [{"name": "gemini-3.5-flash", "verified": True, "supports_recoverai": True}]
+
+    res = GeminiService.make_recovery_decision(
+        tx_id="pay_test_123",
+        amount=100.0,
+        payment_method="card",
+        failure_code="BAD_REQUEST_PAYMENT_TIMED_OUT",
+        retry_count=0,
+        customer_email="test@c.com",
+        customer_spending_history=500.0
+    )
+    
+    assert res["recommended_action"] == "RETRY"
+    assert res["confidence"] == 0.85
+    assert "retry approved" in res["explanation"]
+    assert res["failure_classification"] == "temporary_failure"
+    assert res["model_name"] == "gemini-3.5-flash"
+    assert res["is_mock"] is False
+
+

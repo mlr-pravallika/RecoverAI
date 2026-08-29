@@ -46,6 +46,7 @@ class RecoveryOrchestrator:
         
         # Log to audit trail
         audit_entry = models.AuditLog(
+            merchant_id=case.merchant_id,
             transaction_id=case.transaction_id,
             recovery_case_id=case.id,
             timestamp=datetime.utcnow(),
@@ -79,6 +80,7 @@ class RecoveryOrchestrator:
             
         # 3. Create initial recovery case in FAILED state
         case = models.RecoveryCase(
+            merchant_id=tx.merchant_id,
             transaction_id=transaction_id,
             status="FAILED",
             retry_count=0,
@@ -121,32 +123,89 @@ class RecoveryOrchestrator:
         )
         
         # 2. Run AI Agents for diagnosis and decision proposals
-        rc_agent = RootCauseAgent()
-        rev_agent = RevenueRiskAgent()
-        dec_agent = RecoveryDecisionAgent()
-        expl_service = AIExplanationService()
-        
-        failure_analysis = rc_agent.analyze_failure(tx.failure_code, tx.payment_method, "")
-        risk_analysis = rev_agent.assess_risk(tx.amount, tx.customer_id, db)
-        ai_proposal = dec_agent.make_decision(
-            amount=tx.amount,
-            root_cause=failure_analysis["classification"],
-            ml_prob=ml_prob,
-            priority=risk_analysis["recovery_priority"],
-            retry_count=case.retry_count
-        )
-        
-        proposed_action = ai_proposal["recommended_action"]
-        ai_reason = ai_proposal["reason"]
-        
+        merchant = db.query(models.Merchant).filter(models.Merchant.id == case.merchant_id).first()
+        is_demo_mode = (tx.is_demo or not merchant or merchant.mode == "demo")
+
+        model_name = "demo-mock-model"
+        failure_classification = "temporary_failure"
+        ai_confidence = ml_prob
+        is_mock_decision = True
+        proposed_action = "MANUAL_REVIEW"
+        ai_reason = "Demo explanation fallback."
+
+        if not is_demo_mode:
+            # REAL MODE: Call real Gemini API
+            from backend.app.services.gemini_service import GeminiService
+            cust = db.query(models.Customer).filter(models.Customer.id == tx.customer_id).first()
+            cust_email = cust.email if cust else "no-email@customer.com"
+            
+            cust_txs = db.query(models.Transaction).filter(
+                models.Transaction.customer_id == tx.customer_id,
+                models.Transaction.status == "captured"
+            ).all()
+            cust_ltv = sum(t.amount for t in cust_txs)
+
+            try:
+                gemini_res = GeminiService.make_recovery_decision(
+                    tx_id=tx.id,
+                    amount=tx.amount,
+                    payment_method=tx.payment_method or "card",
+                    failure_code=tx.failure_code or "BAD_REQUEST_PAYMENT_TIMED_OUT",
+                    retry_count=case.retry_count or 0,
+                    customer_email=cust_email,
+                    customer_spending_history=float(cust_ltv)
+                )
+                model_name = gemini_res["model_name"]
+                proposed_action = gemini_res["recommended_action"]
+                ai_confidence = gemini_res["confidence"]
+                ai_reason = gemini_res["explanation"]
+                failure_classification = gemini_res["failure_classification"]
+                is_mock_decision = False
+            except Exception as e:
+                # Handle API errors gracefully
+                # If API key is missing or blank, clearly show: GEMINI: NOT CONFIGURED
+                error_str = str(e)
+                if "NOT CONFIGURED" in error_str:
+                    ai_reason = "GEMINI: NOT CONFIGURED"
+                else:
+                    ai_reason = f"Gemini API Error: {error_str}"
+                
+                # Fallback to local compliance logic (never claim fallback is real Gemini output)
+                proposed_action = "MANUAL_REVIEW"
+                ai_confidence = 0.50
+                failure_classification = "temporary_failure"
+                model_name = "fallback-local-rule"
+                is_mock_decision = True
+        else:
+            # DEMO MODE: Keep mock AI decisions separate
+            rc_agent = RootCauseAgent()
+            rev_agent = RevenueRiskAgent()
+            dec_agent = RecoveryDecisionAgent()
+            
+            failure_analysis = rc_agent.analyze_failure(tx.failure_code, tx.payment_method, "")
+            risk_analysis = rev_agent.assess_risk(tx.amount, tx.customer_id, db)
+            ai_proposal = dec_agent.make_decision(
+                amount=tx.amount,
+                root_cause=failure_analysis["classification"],
+                ml_prob=ml_prob,
+                priority=risk_analysis["recovery_priority"],
+                retry_count=case.retry_count
+            )
+            proposed_action = ai_proposal["recommended_action"]
+            ai_reason = ai_proposal["reason"]
+            failure_classification = failure_analysis["classification"]
+            ai_confidence = ml_prob
+            model_name = "demo-mock-model"
+            is_mock_decision = True
+
         # 3. Evaluate proposal via compliance policy guardrails
         policy_engine = PolicyEngine(db)
         policy_result = policy_engine.evaluate(
             transaction=tx,
             recovery_case=case,
             proposed_action=proposed_action,
-            ai_confidence=ml_prob,
-            root_cause_classification=failure_analysis["classification"]
+            ai_confidence=ai_confidence,
+            root_cause_classification=failure_classification
         )
         
         final_action = policy_result["action"]
@@ -196,20 +255,26 @@ class RecoveryOrchestrator:
             )
             
         # Log explanation as an audit note or details
-        explanation = expl_service.get_merchant_explanation(
-            transaction_id=tx.id,
-            failure_code=tx.failure_code,
-            ml_prob=ml_prob,
-            recommended_action=final_action,
-            reason=ai_reason
-        )
+        if is_demo_mode:
+            expl_service = AIExplanationService()
+            explanation = expl_service.get_merchant_explanation(
+                transaction_id=tx.id,
+                failure_code=tx.failure_code,
+                ml_prob=ml_prob,
+                recommended_action=final_action,
+                reason=ai_reason
+            )
+        else:
+            explanation = ai_reason
         
         # Save explanation to case metadata
+        case.explanation = explanation
         case.updated_at = datetime.utcnow()
         db.commit()
         
         # Add explanation entry to audit log
         db.add(models.AuditLog(
+            merchant_id=case.merchant_id,
             transaction_id=tx.id,
             recovery_case_id=case.id,
             timestamp=datetime.utcnow(),
@@ -218,7 +283,16 @@ class RecoveryOrchestrator:
             previous_state=None,
             new_state=None,
             reason=explanation,
-            metadata_json=None
+            metadata_json=json.dumps({
+                "model_name": model_name,
+                "proposed_action": proposed_action,
+                "confidence": ai_confidence,
+                "classification": failure_classification,
+                "explanation": explanation,
+                "timestamp": datetime.utcnow().isoformat(),
+                "transaction_id": tx.id,
+                "is_mock": is_mock_decision
+            })
         ))
         db.commit()
         
