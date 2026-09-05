@@ -131,6 +131,9 @@ npm run build
 
 ### Product Demo:
 [Product Demo Video] — Watch the end-to-end RecoverAI product workflow and key capabilities.
+
+https://github.com/user-attachments/assets/975292dd-cc8d-4796-b605-33d65907a257
+
 Product demonstration recording showcasing the RecoverAI platform, recovery workflow, simulations, policy controls, and auditability.
 
 
