@@ -7,6 +7,7 @@ python-dotenv==1.0.1
 pandas==2.2.2
 numpy==1.26.4
 scikit-learn==1.5.0
+setuptools<70
 razorpay==1.4.1
 pytest==8.2.2
 requests==2.32.3

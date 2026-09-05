@@ -125,3 +125,14 @@ Compile the production bundle to ensure no TypeScript or CSS errors:
 cd frontend
 npm run build
 ```
+
+### Live Demo:
+[RecoverAI Live Demo] https://frontend-seven-omega-k6nsl3ue7y.vercel.app — Explore the deployed RecoverAI revenue recovery platform.
+
+### Product Demo:
+[Product Demo Video] — Watch the end-to-end RecoverAI product workflow and key capabilities.
+Product demonstration recording showcasing the RecoverAI platform, recovery workflow, simulations, policy controls, and auditability.
+
+
+
+

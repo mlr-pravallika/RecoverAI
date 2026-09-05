@@ -129,20 +129,33 @@ class GeminiService:
             if env_pref:
                 sorted_candidates.append(env_pref)
 
-            # Prioritize standard flash models
-            flash = sorted([c for c in candidates if "flash" in c and "lite" not in c], reverse=True)
+            # Prioritize modern verified models explicitly
+            modern_priority = [
+                "gemini-3.6-flash",
+                "gemini-3.8-flash",
+                "gemini-3.7-flash",
+                "gemini-3-flash-preview",
+                "gemini-flash-latest",
+                "gemini-2.5-flash-lite"
+            ]
+            for mp in modern_priority:
+                if mp in candidates:
+                    sorted_candidates.append(mp)
+
+            # Followed by other flash models
+            flash = sorted([c for c in candidates if "flash" in c and "lite" not in c and c not in sorted_candidates], reverse=True)
             sorted_candidates.extend(flash)
 
-            # Prioritize pro models
-            pro = sorted([c for c in candidates if "pro" in c], reverse=True)
+            # Pro models
+            pro = sorted([c for c in candidates if "pro" in c and c not in sorted_candidates], reverse=True)
             sorted_candidates.extend(pro)
 
             # Flash lite
-            lite = sorted([c for c in candidates if "lite" in c], reverse=True)
+            lite = sorted([c for c in candidates if "lite" in c and c not in sorted_candidates], reverse=True)
             sorted_candidates.extend(lite)
 
             # Fallbacks in case list is empty or API key restricts list API
-            standard_fallbacks = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+            standard_fallbacks = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3-flash-preview", "gemini-flash-latest"]
             sorted_candidates.extend(standard_fallbacks)
 
             # Deduplicate
@@ -152,8 +165,8 @@ class GeminiService:
             # Verify top candidates at boot
             verified_list = []
             for candidate in sorted_candidates:
-                # Limit validation checks to save quota/startup time, but check until we verify at least one
-                if len(verified_list) >= 2:
+                # Stop as soon as we verify at least one model to minimize startup latency
+                if len(verified_list) >= 1:
                     break
                 print(f"Discovering and testing model: {candidate}")
                 test_status = cls.verify_model_compatibility(candidate)
@@ -202,8 +215,8 @@ class GeminiService:
         return False
 
     @classmethod
-    def verify_connection(cls) -> Dict[str, Any]:
-        """Verify Gemini connection using the active model."""
+    def verify_connection(cls, force_recheck: bool = False) -> Dict[str, Any]:
+        """Verify Gemini connection using the active model with caching."""
         active_model = cls.get_active_model()
         if not active_model:
             return {
@@ -214,8 +227,21 @@ class GeminiService:
                 "last_verified_at": None
             }
         
+        # If already verified in cache, return immediately to satisfy sub-second API latency
+        if not force_recheck and any(vm.get("name") == active_model and vm.get("verified") for vm in cls._verified_models):
+            return {
+                "connected": True,
+                "error": None,
+                "active_model": active_model,
+                "sdk": "google-genai",
+                "last_verified_at": cls._last_verified_at
+            }
+        
         status = cls.verify_model_compatibility(active_model)
         if status["verified"]:
+            cls._last_verified_at = datetime.utcnow().isoformat()
+            if not any(vm.get("name") == active_model for vm in cls._verified_models):
+                cls._verified_models.append({"name": active_model, "verified": True, "supports_recoverai": True})
             return {
                 "connected": True,
                 "error": None,
